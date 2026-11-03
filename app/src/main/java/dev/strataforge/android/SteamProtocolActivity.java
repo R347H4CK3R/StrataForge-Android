@@ -63,6 +63,13 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private LinearLayout gameList;
     private TextView libraryStatus;
     private Button syncButton;
+    private ProgressBar downloadProgress;
+    private TextView downloadLabel;
+    private volatile String tokenAccount=null;
+    private volatile String pendingRefreshToken=null;
+    private volatile boolean attemptingSavedSession=false;
+    private volatile boolean explicitSignOut=false;
+    private int selectedAppId=0;
     private final ArrayList<PICSRequest> packageRequests=new ArrayList<>();
     private final ArrayList<PICSRequest> appRequests=new ArrayList<>();
     private final LinkedHashMap<Integer,String> ownedGames=new LinkedHashMap<>();
@@ -80,19 +87,20 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(16,12,16,12);root.setBackgroundColor(Color.rgb(13,18,27));
         ScrollView sc=new ScrollView(this);sc.addView(root);setContentView(sc);
-        TextView heading=new TextView(this);heading.setText("STEAM DIRECT CLIENT");
+        TextView heading=new TextView(this);heading.setText("STRATAFORGE  /  STEAM");
         heading.setTextColor(Color.WHITE);heading.setTextSize(22);root.addView(heading);
-        TextView info=new TextView(this);info.setText("Use Steam Guard on another device to approve QR sign-in. No Steam password is entered into StrataForge. Download only games your Steam account can access.");
+        TextView info=new TextView(this);info.setText("Your Steam library on Android. Sign in once with Steam Guard; StrataForge reconnects securely when reopened.");
         info.setTextColor(Color.LTGRAY);info.setTextSize(14);info.setPadding(0,12,0,12);root.addView(info);
-        root.addView(makeButton("Connect to Steam (QR)",()->connect()));
+        root.addView(makeButton("Sign in / Reconnect to Steam",()->connect()));
         state=new TextView(this);state.setText("Not connected");state.setTextColor(Color.WHITE);
         state.setTextSize(16);state.setPadding(0,12,0,12);root.addView(state);
         qrView=new ImageView(this);
         qrView.setAdjustViewBounds(true);
         qrView.setMaxHeight(460);
-        root.addView(qrView,new LinearLayout.LayoutParams(-1,440));
+        qrView.setVisibility(android.view.View.GONE);
+        root.addView(qrView,new LinearLayout.LayoutParams(-1,330));
         TextView libraryHeader=new TextView(this);
-        libraryHeader.setText("MY STEAM LIBRARY");
+        libraryHeader.setText("STEAM  /  LIBRARY");
         libraryHeader.setTextColor(Color.WHITE);
         libraryHeader.setTextSize(21);
         libraryHeader.setPadding(0,12,0,4);
@@ -107,18 +115,49 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         gameList=new LinearLayout(this);
         gameList.setOrientation(LinearLayout.VERTICAL);
         root.addView(gameList);
+        TextView downloadsHeading=new TextView(this);
+        downloadsHeading.setText("DOWNLOADS");
+        downloadsHeading.setTextColor(Color.WHITE);downloadsHeading.setTextSize(21);
+        downloadsHeading.setPadding(0,16,0,4);root.addView(downloadsHeading);
+        downloadProgress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
+        downloadProgress.setMax(1000);downloadProgress.setProgress(0);
+        downloadProgress.setVisibility(android.view.View.GONE);
+        root.addView(downloadProgress,new LinearLayout.LayoutParams(-1,14));
+        downloadLabel=new TextView(this);
+        downloadLabel.setText("No active downloads");downloadLabel.setTextSize(14);
+        downloadLabel.setTextColor(Color.LTGRAY);downloadLabel.setPadding(0,8,0,12);
+        root.addView(downloadLabel);
         appIdInput=new EditText(this);appIdInput.setTextColor(Color.WHITE);appIdInput.setHintTextColor(Color.LTGRAY);
         appIdInput.setHint("Steam game AppID (e.g. 440)");appIdInput.setInputType(2);
         root.addView(appIdInput);
         downloadButton=makeButton("Download owned game (Windows files)",()->confirmDownload());
         downloadButton.setEnabled(false);root.addView(downloadButton);
-        root.addView(makeButton("Disconnect / sign out",()->signOut()));
+        root.addView(makeButton("Sign out of Steam",()->new AlertDialog.Builder(this)
+            .setTitle("Sign out of Steam?")
+            .setMessage("Forget the saved Steam session on this tablet?")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("Sign out",(dialog,which)->signOut())
+            .show()));
+        connectIfSaved();
         TextView note=new TextView(this);note.setText("Downloaded PC games are files only. Windows-game execution is not implemented. Games install to Android/data/dev.strataforge.android/files/steamapps. Verify free space before downloading.");
         note.setTextColor(Color.LTGRAY);note.setPadding(0,12,0,0);root.addView(note);
     }
     private Button makeButton(String s,Runnable action){Button b=new Button(this);b.setAllCaps(false);b.setText(s);b.setOnClickListener(v->action.run());return b;}
+    private void connectIfSaved(){
+        try{
+            String[] saved=SteamSessionStore.read(this);
+            if(saved!=null){
+                state.setText("Restoring Steam session for "+saved[0]+"...");
+                connect();
+            }
+        }catch(Exception ex){
+            SteamSessionStore.clear(this);
+            state.setText("Saved Steam session unavailable. Scan Steam Guard to sign in.");
+        }
+    }
     private void connect(){
         if(running.getAndSet(true)){show("Already connecting or connected");return;}
+        explicitSignOut=false;
         show("Connecting to Steam network...");
         new Thread(()->{
             try {
@@ -126,8 +165,20 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 steamUser=steamClient.getHandler(SteamUser.class);
                 steamApps=steamClient.getHandler(SteamApps.class);
                 callbackManager=new CallbackManager(steamClient);
-                callbackManager.subscribe(ConnectedCallback.class,c->beginQrAuthentication());
-                callbackManager.subscribe(DisconnectedCallback.class,c->{show("Disconnected from Steam");running.set(false);loggedIn=false;runOnUiThread(()->downloadButton.setEnabled(false));});
+                callbackManager.subscribe(ConnectedCallback.class,c->onSteamConnected());
+                callbackManager.subscribe(DisconnectedCallback.class,c->{
+                    loggedIn=false;
+                    runOnUiThread(()->{downloadButton.setEnabled(false);syncButton.setEnabled(false);});
+                    if(explicitSignOut || c.isUserInitiated()){
+                        running.set(false);show("Steam disconnected");
+                    }else{
+                        show("Steam connection lost. Reconnecting...");
+                        new Thread(()->{
+                            try{Thread.sleep(1500);if(running.get()&&steamClient!=null)steamClient.connect();}
+                            catch(Exception e){show("Reconnect failed: "+e.getMessage());}
+                        },"steam-reconnect").start();
+                    }
+                });
                 callbackManager.subscribe(LoggedOnCallback.class,this::onLoggedOn);
                 callbackManager.subscribe(LoggedOffCallback.class,c->{loggedIn=false;show("Signed out: "+c.getResult());runOnUiThread(()->downloadButton.setEnabled(false));});
                 callbackManager.subscribe(LicenseListCallback.class,this::onLicenseList);
@@ -136,6 +187,26 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 while(running.get()){callbackManager.runWaitCallbacks(1000L);}
             } catch(Throwable e) {show("Steam connection error: "+e.getClass().getSimpleName()+": "+e.getMessage());running.set(false);}
         },"steam-callbacks").start();
+    }
+    private void onSteamConnected(){
+        try{
+            String[] session=SteamSessionStore.read(this);
+            if(session!=null){
+                attemptingSavedSession=true;
+                tokenAccount=session[0];
+                LogOnDetails details=new LogOnDetails();
+                details.setUsername(session[0]);details.setAccessToken(session[1]);
+                details.setLoginID(20332);
+                show("Signing in as "+session[0]+"...");
+                steamUser.logOn(details);
+                return;
+            }
+        }catch(Exception error){
+            SteamSessionStore.clear(this);
+            show("Saved Steam login expired. Starting Steam Guard...");
+        }
+        attemptingSavedSession=false;
+        beginQrAuthentication();
     }
     private void beginQrAuthentication(){
         show("Requesting Steam Guard QR login...");
@@ -150,6 +221,8 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 login.setUsername(result.getAccountName());
                 login.setAccessToken(result.getRefreshToken());
                 login.setLoginID(20332);
+                tokenAccount=result.getAccountName();
+                pendingRefreshToken=result.getRefreshToken();
                 show("Steam Guard approved. Logging in...");
                 steamUser.logOn(login);
             } catch(Exception e){show("Steam Guard authentication failed: "+e.getClass().getSimpleName()+": "+e.getMessage());}
@@ -161,12 +234,34 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             BitMatrix matrix=new QRCodeWriter().encode(url,BarcodeFormat.QR_CODE,440,440);
             int w=matrix.getWidth(),h=matrix.getHeight();Bitmap bitmap=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);
             for(int y=0;y<h;y++)for(int x=0;x<w;x++)bitmap.setPixel(x,y,matrix.get(x,y)?Color.BLACK:Color.WHITE);
-            runOnUiThread(()->{if(!isDestroyed()){qrView.setImageBitmap(bitmap);state.setText("Scan this code with the Steam mobile app, then approve login.");}});
+            runOnUiThread(()->{
+                if(!isDestroyed()){
+                    qrView.setVisibility(android.view.View.VISIBLE);
+                    qrView.setImageBitmap(bitmap);
+                    state.setText("Scan this code in Steam Guard and approve sign-in.");
+                }
+            });
         } catch(Exception e){show("Unable to display Steam QR code: "+e.getMessage());}
     }
     private void onLoggedOn(LoggedOnCallback c){
-        if(c.getResult()!=EResult.OK){show("Steam login rejected: "+c.getResult());return;}
-        loggedIn=true;show("Authenticated to Steam. Loading licenses...");
+        if(c.getResult()!=EResult.OK){
+            if(attemptingSavedSession){
+                attemptingSavedSession=false;
+                SteamSessionStore.clear(this);
+                show("Saved Steam login expired. Requesting Steam Guard...");
+                beginQrAuthentication();
+            }else show("Steam login rejected: "+c.getResult());
+            return;
+        }
+        attemptingSavedSession=false;
+        loggedIn=true;
+        if(pendingRefreshToken!=null && tokenAccount!=null){
+            try{SteamSessionStore.save(this,tokenAccount,pendingRefreshToken);}
+            catch(Exception e){show("Steam connected, but secure session storage failed");}
+            finally{pendingRefreshToken=null;}
+        }
+        runOnUiThread(()->{qrView.setVisibility(android.view.View.GONE);qrView.setImageDrawable(null);});
+        show("Steam signed in as "+(tokenAccount==null?"your account":tokenAccount)+". Loading library...");
     }
     private void onLicenseList(LicenseListCallback c){
         if(c.getResult()!=EResult.OK){show("Could not load Steam entitlements: "+c.getResult());return;}
@@ -265,11 +360,25 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             }
             for(Map.Entry<Integer,String> game:games){
                 int id=game.getKey();
-                Button select=makeButton(game.getValue()+"  •  Download",()->{
+                LinearLayout tile=new LinearLayout(this);
+                tile.setOrientation(LinearLayout.HORIZONTAL);
+                tile.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                tile.setPadding(12,12,12,12);
+                tile.setBackgroundColor(Color.rgb(28,36,52));
+                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+                lp.setMargins(0,4,0,4);
+                gameList.addView(tile,lp);
+                TextView title=new TextView(this);
+                title.setText(game.getValue()+"\nNot installed  |  Steam AppID "+id);
+                title.setTextColor(Color.WHITE);
+                title.setTextSize(15);
+                tile.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+                Button install=makeButton("Install",()->{
+                    selectedAppId=id;
                     appIdInput.setText(String.valueOf(id));
                     confirmDownload();
                 });
-                gameList.addView(select);
+                tile.addView(install);
             }
         });
     }
@@ -290,6 +399,12 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     }
     private void download(int appId,File dir){
         downloading=true;
+        selectedAppId=appId;
+        runOnUiThread(()->{
+            downloadProgress.setVisibility(android.view.View.VISIBLE);
+            downloadProgress.setIndeterminate(true);
+            downloadLabel.setText("Preparing Steam AppID "+appId+"...");
+        });
         new Thread(()->{
             try(DepotDownloader downloader=new DepotDownloader(steamClient,licenses,true)){
                 currentDownload=downloader;
@@ -308,15 +423,41 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             finally{currentDownload=null;downloading=false;}
         },"steam-depot").start();
     }
-    @Override public void onDownloadStarted(DownloadItem item){show("Steam download started: "+item.getAppId());}
-    @Override public void onDownloadCompleted(DownloadItem item){show("Steam download completed for AppID "+item.getAppId());}
-    @Override public void onDownloadFailed(DownloadItem item,Throwable e){show("Steam download failed for "+item.getAppId()+": "+e.getMessage());}
+    @Override public void onDownloadStarted(DownloadItem item){
+        show("Steam download started: "+item.getAppId());
+        runOnUiThread(()->{
+            downloadProgress.setVisibility(android.view.View.VISIBLE);
+            downloadProgress.setIndeterminate(true);
+            downloadLabel.setText("Downloading game "+item.getAppId()+": preparing depot files...");
+        });
+    }
+    @Override public void onDownloadCompleted(DownloadItem item){
+        show("Steam download completed for AppID "+item.getAppId());
+        runOnUiThread(()->{
+            downloadProgress.setIndeterminate(false);
+            downloadProgress.setProgress(1000);
+            downloadLabel.setText("Steam AppID "+item.getAppId()+" downloaded. Game execution is not yet available.");
+        });
+    }
+    @Override public void onDownloadFailed(DownloadItem item,Throwable e){
+        show("Steam download failed for "+item.getAppId()+": "+e.getMessage());
+        runOnUiThread(()->{downloadProgress.setIndeterminate(false);downloadLabel.setText("Download failed: "+e.getMessage());});
+    }
     @Override public void onStatusUpdate(String message){show("Steam: "+message);}
     @Override public void onChunkCompleted(int depotId,float percent,long compressed,long uncompressed){
-        show(String.format(Locale.US,"Depot %d: %.1f%% downloaded",depotId,percent*100f));
+        float fraction=Math.max(0,Math.min(1,percent));
+        runOnUiThread(()->{
+            downloadProgress.setIndeterminate(false);
+            downloadProgress.setProgress(Math.round(fraction*1000));
+            downloadLabel.setText(String.format(Locale.US,"Depot %d: %.1f%%  |  %,d MB transferred",
+                depotId,fraction*100,(compressed/1048576)));
+        });
     }
     private void signOut(){
         if(currentDownload!=null){show("Finish or cancel the active game download before signing out.");return;}
+        explicitSignOut=true;
+        SteamSessionStore.clear(this);
+        tokenAccount=null;pendingRefreshToken=null;
         if(steamUser!=null){try{steamUser.logOff();}catch(Throwable ignored){}}
         if(steamClient!=null){try{steamClient.disconnect();}catch(Throwable ignored){}}
         loggedIn=false;running.set(false);licenses=Collections.emptyList();
@@ -326,7 +467,12 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         syncButton.setEnabled(false);
         gameList.removeAllViews();
         libraryStatus.setText("Signed out.");
-        show("Signed out. Steam refresh token was not saved.");
+        show("Signed out. Secure Steam login removed from tablet.");
     }
-    @Override protected void onDestroy(){signOut();super.onDestroy();}
+    @Override protected void onDestroy(){
+        // Closing the screen must never erase the saved Steam login.
+        running.set(false);
+        try{if(steamClient!=null)steamClient.disconnect();}catch(Exception ignored){}
+        super.onDestroy();
+    }
 }

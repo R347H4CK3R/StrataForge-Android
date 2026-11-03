@@ -4,3 +4,5 @@ build/
 app/build/
 *.apk
 local.properties
+debugsign/*.key
+debugsign/*.crt

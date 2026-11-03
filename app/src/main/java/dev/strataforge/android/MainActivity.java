@@ -58,7 +58,8 @@ public class MainActivity extends Activity {
         content.addView(text("ANDROID â€¢ EXPERIMENTAL",15));
         content.addView(text("Game runtime: NOT INSTALLED",19));
         content.addView(text("This build inventories game files and checks device support. It cannot execute Windows games or iOS applications.",15));
-        content.addView(button("Steam account and library", v->startActivity(new Intent(this, SteamActivity.class))));
+        content.addView(button("Steam Direct - QR login and game downloads", v->startActivity(new Intent(this, SteamProtocolActivity.class))));
+        content.addView(button("Steam website / library", v->startActivity(new Intent(this, SteamActivity.class))));
         content.addView(button("Import game file", v->chooseFile()));
         content.addView(button("Refresh diagnostics", v->render()));
         content.addView(text("DEVICE DIAGNOSTICS",21));

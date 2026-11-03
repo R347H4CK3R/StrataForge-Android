@@ -1,4 +1,4 @@
-package dev.strataforge.android;
+﻿package dev.strataforge.android;
 
 import android.app.Activity;
 import android.app.ActivityManager;
@@ -55,9 +55,10 @@ public class MainActivity extends Activity {
         scroll.addView(content);
         setContentView(scroll);
         content.addView(text("STRATAFORGE",28));
-        content.addView(text("ANDROID • EXPERIMENTAL",15));
+        content.addView(text("ANDROID â€¢ EXPERIMENTAL",15));
         content.addView(text("Game runtime: NOT INSTALLED",19));
         content.addView(text("This build inventories game files and checks device support. It cannot execute Windows games or iOS applications.",15));
+        content.addView(button("Steam account and library", v->startActivity(new Intent(this, SteamActivity.class))));
         content.addView(button("Import game file", v->chooseFile()));
         content.addView(button("Refresh diagnostics", v->render()));
         content.addView(text("DEVICE DIAGNOSTICS",21));
@@ -128,3 +129,4 @@ public class MainActivity extends Activity {
         }
     }
 }
+

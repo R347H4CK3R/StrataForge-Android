@@ -1,4 +1,4 @@
-﻿package dev.strataforge.android;
+package dev.strataforge.android;
 
 import android.app.Activity;
 import android.app.ActivityManager;

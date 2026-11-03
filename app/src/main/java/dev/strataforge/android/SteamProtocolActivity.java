@@ -20,6 +20,11 @@ import in.dragonbra.javasteam.steam.authentication.AuthPollResult;
 import in.dragonbra.javasteam.steam.authentication.AuthSessionDetails;
 import in.dragonbra.javasteam.steam.authentication.QrAuthSession;
 import in.dragonbra.javasteam.steam.handlers.steamapps.License;
+import in.dragonbra.javasteam.steam.handlers.steamapps.PICSRequest;
+import in.dragonbra.javasteam.steam.handlers.steamapps.SteamApps;
+import in.dragonbra.javasteam.steam.handlers.steamapps.callback.PICSProductInfoCallback;
+import in.dragonbra.javasteam.steam.handlers.steamapps.PICSProductInfo;
+import in.dragonbra.javasteam.types.KeyValue;
 import in.dragonbra.javasteam.steam.handlers.steamapps.callback.LicenseListCallback;
 import in.dragonbra.javasteam.steam.handlers.steamuser.LogOnDetails;
 import in.dragonbra.javasteam.steam.handlers.steamuser.SteamUser;
@@ -31,6 +36,12 @@ import in.dragonbra.javasteam.steam.steamclient.callbacks.ConnectedCallback;
 import in.dragonbra.javasteam.steam.steamclient.callbacks.DisconnectedCallback;
 import java.io.File;
 import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -48,6 +59,18 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private CallbackManager callbackManager;
     private List<License> licenses=Collections.emptyList();
     private volatile DepotDownloader currentDownload;
+    private SteamApps steamApps;
+    private LinearLayout gameList;
+    private TextView libraryStatus;
+    private Button syncButton;
+    private final ArrayList<PICSRequest> packageRequests=new ArrayList<>();
+    private final ArrayList<PICSRequest> appRequests=new ArrayList<>();
+    private final LinkedHashMap<Integer,String> ownedGames=new LinkedHashMap<>();
+    private int packageCursor=0;
+    private int appCursor=0;
+    private boolean loadingPackages=false;
+    private boolean loadingApps=false;
+    private volatile boolean librarySyncing=false;
 
     private void show(String msg){
         runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())state.setText(msg);});
@@ -68,6 +91,22 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         qrView.setAdjustViewBounds(true);
         qrView.setMaxHeight(460);
         root.addView(qrView,new LinearLayout.LayoutParams(-1,440));
+        TextView libraryHeader=new TextView(this);
+        libraryHeader.setText("MY STEAM LIBRARY");
+        libraryHeader.setTextColor(Color.WHITE);
+        libraryHeader.setTextSize(21);
+        libraryHeader.setPadding(0,12,0,4);
+        root.addView(libraryHeader);
+        libraryStatus=new TextView(this);
+        libraryStatus.setTextColor(Color.LTGRAY);
+        libraryStatus.setText("Sign in to load your games.");
+        root.addView(libraryStatus);
+        syncButton=makeButton("Refresh owned games",()->loadLibrary());
+        syncButton.setEnabled(false);
+        root.addView(syncButton);
+        gameList=new LinearLayout(this);
+        gameList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(gameList);
         appIdInput=new EditText(this);appIdInput.setTextColor(Color.WHITE);appIdInput.setHintTextColor(Color.LTGRAY);
         appIdInput.setHint("Steam game AppID (e.g. 440)");appIdInput.setInputType(2);
         root.addView(appIdInput);
@@ -85,12 +124,14 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             try {
                 steamClient=new SteamClient();
                 steamUser=steamClient.getHandler(SteamUser.class);
+                steamApps=steamClient.getHandler(SteamApps.class);
                 callbackManager=new CallbackManager(steamClient);
                 callbackManager.subscribe(ConnectedCallback.class,c->beginQrAuthentication());
                 callbackManager.subscribe(DisconnectedCallback.class,c->{show("Disconnected from Steam");running.set(false);loggedIn=false;runOnUiThread(()->downloadButton.setEnabled(false));});
                 callbackManager.subscribe(LoggedOnCallback.class,this::onLoggedOn);
                 callbackManager.subscribe(LoggedOffCallback.class,c->{loggedIn=false;show("Signed out: "+c.getResult());runOnUiThread(()->downloadButton.setEnabled(false));});
                 callbackManager.subscribe(LicenseListCallback.class,this::onLicenseList);
+                callbackManager.subscribe(PICSProductInfoCallback.class,this::onPicsInfo);
                 steamClient.connect();
                 while(running.get()){callbackManager.runWaitCallbacks(1000L);}
             } catch(Throwable e) {show("Steam connection error: "+e.getClass().getSimpleName()+": "+e.getMessage());running.set(false);}
@@ -130,8 +171,107 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private void onLicenseList(LicenseListCallback c){
         if(c.getResult()!=EResult.OK){show("Could not load Steam entitlements: "+c.getResult());return;}
         licenses=c.getLicenseList();
-        show("Steam authenticated. "+licenses.size()+" licenses loaded. Enter an owned game AppID to download.");
-        runOnUiThread(()->downloadButton.setEnabled(true));
+        show("Steam authenticated. "+licenses.size()+" licenses loaded.");
+        runOnUiThread(()->{downloadButton.setEnabled(true);syncButton.setEnabled(true);});
+        loadLibrary();
+    }
+    private void loadLibrary(){
+        if(!loggedIn||steamApps==null||licenses.isEmpty()){
+            show("Sign into Steam and wait for licenses before syncing your library.");
+            return;
+        }
+        if(librarySyncing){show("Library sync is already running.");return;}
+        librarySyncing=true;
+        loadingPackages=true;loadingApps=false;
+        packageCursor=0;appCursor=0;
+        packageRequests.clear();appRequests.clear();ownedGames.clear();
+        Set<Integer> uniquePackages=new LinkedHashSet<>();
+        for(License l:licenses)if(l.getPackageID()>0)uniquePackages.add(l.getPackageID());
+        for(Integer id:uniquePackages)packageRequests.add(new PICSRequest(id));
+        runOnUiThread(()->{gameList.removeAllViews();libraryStatus.setText("Resolving "+packageRequests.size()+" owned Steam packages...");syncButton.setEnabled(false);});
+        nextPackageBatch();
+    }
+    private void nextPackageBatch(){
+        if(!loadingPackages)return;
+        if(packageCursor>=packageRequests.size()){
+            loadingPackages=false;loadingApps=true;
+            appRequests.clear();
+            for(Integer id:ownedGames.keySet())appRequests.add(new PICSRequest(id));
+            appCursor=0;
+            runOnUiThread(()->libraryStatus.setText("Found "+ownedGames.size()+" game IDs. Loading game names..."));
+            nextAppBatch();
+            return;
+        }
+        int end=Math.min(packageCursor+40,packageRequests.size());
+        ArrayList<PICSRequest> batch=new ArrayList<>(packageRequests.subList(packageCursor,end));
+        packageCursor=end;
+        try{steamApps.picsGetProductInfo(Collections.emptyList(),batch);}
+        catch(Throwable t){finishLibrary("Steam package lookup failed: "+t.getMessage());}
+    }
+    private void nextAppBatch(){
+        if(!loadingApps)return;
+        if(appCursor>=appRequests.size()){
+            loadingApps=false;
+            finishLibrary("Library synced: "+ownedGames.size()+" games found.");
+            return;
+        }
+        int end=Math.min(appCursor+40,appRequests.size());
+        ArrayList<PICSRequest> batch=new ArrayList<>(appRequests.subList(appCursor,end));
+        appCursor=end;
+        try{steamApps.picsGetProductInfo(batch,Collections.emptyList());}
+        catch(Throwable t){finishLibrary("Steam game details failed: "+t.getMessage());}
+    }
+    private void onPicsInfo(PICSProductInfoCallback callback){
+        try{
+            if(loadingPackages){
+                for(Map.Entry<Integer,PICSProductInfo> record:callback.getPackages().entrySet()){
+                    KeyValue root=record.getValue().getKeyValues();
+                    KeyValue appIds=root.get("appids");
+                    for(KeyValue child:appIds.getChildren()){
+                        String value=child.getValue();
+                        if(value==null||!value.matches("[0-9]+"))value=child.getName();
+                        try{int id=Integer.parseInt(value);if(id>0)ownedGames.put(id,"Game "+id);}catch(Exception ignored){}
+                    }
+                }
+                if(!callback.isResponsePending())nextPackageBatch();
+                return;
+            }
+            if(loadingApps){
+                for(Map.Entry<Integer,PICSProductInfo> record:callback.getApps().entrySet()){
+                    KeyValue root=record.getValue().getKeyValues();
+                    String name=root.get("common").get("name").getValue();
+                    if(name==null||name.trim().isEmpty())name="Game "+record.getKey();
+                    if(ownedGames.containsKey(record.getKey()))ownedGames.put(record.getKey(),name);
+                }
+                if(!callback.isResponsePending())nextAppBatch();
+            }
+        }catch(Throwable t){finishLibrary("Library sync error: "+t.getMessage());}
+    }
+    private void finishLibrary(String message){
+        librarySyncing=false;loadingPackages=false;loadingApps=false;
+        show(message);
+        runOnUiThread(()->{
+            if(isFinishing()||isDestroyed())return;
+            syncButton.setEnabled(loggedIn);
+            gameList.removeAllViews();
+            ArrayList<Map.Entry<Integer,String>> games=new ArrayList<>(ownedGames.entrySet());
+            games.sort((a,b)->a.getValue().compareToIgnoreCase(b.getValue()));
+            libraryStatus.setText(message);
+            if(games.isEmpty()){
+                TextView empty=new TextView(this);
+                empty.setText("No game titles resolved. Try Refresh owned games or check Steam account licenses.");
+                empty.setTextColor(Color.LTGRAY);
+                gameList.addView(empty);
+            }
+            for(Map.Entry<Integer,String> game:games){
+                int id=game.getKey();
+                Button select=makeButton(game.getValue()+"  •  Download",()->{
+                    appIdInput.setText(String.valueOf(id));
+                    confirmDownload();
+                });
+                gameList.addView(select);
+            }
+        });
     }
     private void confirmDownload(){
         if(!loggedIn || licenses.isEmpty()){show("Connect and load licenses first.");return;}
@@ -180,8 +320,12 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         if(steamUser!=null){try{steamUser.logOff();}catch(Throwable ignored){}}
         if(steamClient!=null){try{steamClient.disconnect();}catch(Throwable ignored){}}
         loggedIn=false;running.set(false);licenses=Collections.emptyList();
+        librarySyncing=false;loadingPackages=false;loadingApps=false;
         qrView.setImageDrawable(null);
         downloadButton.setEnabled(false);
+        syncButton.setEnabled(false);
+        gameList.removeAllViews();
+        libraryStatus.setText("Signed out.");
         show("Signed out. Steam refresh token was not saved.");
     }
     @Override protected void onDestroy(){signOut();super.onDestroy();}

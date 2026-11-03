@@ -6,3 +6,4 @@ app/build/
 local.properties
 debugsign/*.key
 debugsign/*.crt
+patch_library.py

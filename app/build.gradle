@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 android {
  namespace 'dev.strataforge.android'
  compileSdk 35
- defaultConfig { applicationId 'dev.strataforge.android'; minSdk 26; targetSdk 35; versionCode 3; versionName '0.2.1' }
+ defaultConfig { applicationId 'dev.strataforge.android'; minSdk 26; targetSdk 35; versionCode 4; versionName '0.3.0' }
  signingConfigs {
   debug {
    storeFile file("$rootDir/debugsign/debug.p12")
@@ -15,6 +15,7 @@ android {
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 dependencies {
+ implementation 'androidx.core:core:1.13.1'
  implementation 'in.dragonbra:javasteam:1.8.0'
  implementation 'in.dragonbra:javasteam-depotdownloader:1.8.0'
  implementation 'com.google.zxing:core:3.5.3'

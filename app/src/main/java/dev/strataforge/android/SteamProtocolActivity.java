@@ -70,6 +70,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private volatile boolean attemptingSavedSession=false;
     private volatile boolean explicitSignOut=false;
     private int selectedAppId=0;
+    private volatile int lastLoggedPercent=-10;
     private final ArrayList<PICSRequest> packageRequests=new ArrayList<>();
     private final ArrayList<PICSRequest> appRequests=new ArrayList<>();
     private final LinkedHashMap<Integer,String> ownedGames=new LinkedHashMap<>();
@@ -245,6 +246,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     }
     private void onLoggedOn(LoggedOnCallback c){
         if(c.getResult()!=EResult.OK){
+            Diagnostics.log("steam-auth","Login rejected: "+c.getResult());
             if(attemptingSavedSession){
                 attemptingSavedSession=false;
                 SteamSessionStore.clear(this);
@@ -255,6 +257,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         }
         attemptingSavedSession=false;
         loggedIn=true;
+        Diagnostics.log("steam-auth","Authenticated Steam session");
         if(pendingRefreshToken!=null && tokenAccount!=null){
             try{SteamSessionStore.save(this,tokenAccount,pendingRefreshToken);}
             catch(Exception e){show("Steam connected, but secure session storage failed");}
@@ -266,6 +269,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private void onLicenseList(LicenseListCallback c){
         if(c.getResult()!=EResult.OK){show("Could not load Steam entitlements: "+c.getResult());return;}
         licenses=c.getLicenseList();
+        Diagnostics.log("steam-library","Received "+licenses.size()+" package licenses");
         show("Steam authenticated. "+licenses.size()+" licenses loaded.");
         runOnUiThread(()->{downloadButton.setEnabled(true);syncButton.setEnabled(true);});
         loadLibrary();
@@ -400,6 +404,8 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private void download(int appId,File dir){
         downloading=true;
         selectedAppId=appId;
+        lastLoggedPercent=-10;
+        Diagnostics.log("game-"+appId,"Download requested");
         runOnUiThread(()->{
             downloadProgress.setVisibility(android.view.View.VISIBLE);
             downloadProgress.setIndeterminate(true);
@@ -419,12 +425,13 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 show("Downloading Steam game "+appId+"...");
                 downloader.awaitCompletion();
                 downloader.removeListener(this);
-            }catch(Throwable e){show("Steam download error: "+e.getClass().getSimpleName()+": "+e.getMessage());}
+            }catch(Throwable e){show("Steam download error: "+e.getClass().getSimpleName()+": "+e.getMessage());Diagnostics.error("game-"+appId,e);}
             finally{currentDownload=null;downloading=false;}
         },"steam-depot").start();
     }
     @Override public void onDownloadStarted(DownloadItem item){
         show("Steam download started: "+item.getAppId());
+        Diagnostics.log("game-"+item.getAppId(),"Download started");
         runOnUiThread(()->{
             downloadProgress.setVisibility(android.view.View.VISIBLE);
             downloadProgress.setIndeterminate(true);
@@ -433,6 +440,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     }
     @Override public void onDownloadCompleted(DownloadItem item){
         show("Steam download completed for AppID "+item.getAppId());
+        Diagnostics.log("game-"+item.getAppId(),"Download completed");
         runOnUiThread(()->{
             downloadProgress.setIndeterminate(false);
             downloadProgress.setProgress(1000);
@@ -441,11 +449,14 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     }
     @Override public void onDownloadFailed(DownloadItem item,Throwable e){
         show("Steam download failed for "+item.getAppId()+": "+e.getMessage());
+        Diagnostics.error("game-"+item.getAppId(),e);
         runOnUiThread(()->{downloadProgress.setIndeterminate(false);downloadLabel.setText("Download failed: "+e.getMessage());});
     }
     @Override public void onStatusUpdate(String message){show("Steam: "+message);}
     @Override public void onChunkCompleted(int depotId,float percent,long compressed,long uncompressed){
         float fraction=Math.max(0,Math.min(1,percent));
+        int tenPercent=(int)(fraction*10);
+        if(tenPercent>lastLoggedPercent){lastLoggedPercent=tenPercent;Diagnostics.log("game-"+selectedAppId,"Depot "+depotId+" "+Math.round(fraction*100)+" percent");}
         runOnUiThread(()->{
             downloadProgress.setIndeterminate(false);
             downloadProgress.setProgress(Math.round(fraction*1000));

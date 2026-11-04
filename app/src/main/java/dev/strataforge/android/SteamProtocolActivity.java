@@ -413,6 +413,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             }).show();
     }
     private void download(int appId,File dir){
+        if(downloading){show("A download is already running");return;}
         downloading=true;
         RuntimeHealth.startDownload(appId);
         selectedAppId=appId;
@@ -437,8 +438,22 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 show("Downloading Steam game "+appId+"...");
                 downloader.awaitCompletion();
                 downloader.removeListener(this);
-            }catch(Throwable e){show("Steam download error: "+e.getClass().getSimpleName()+": "+e.getMessage());Diagnostics.error("game-"+appId,e);}
-            finally{currentDownload=null;downloading=false;RuntimeHealth.finishDownload();}
+            }catch(Throwable e){
+                Diagnostics.error("game-"+appId,e);
+                if(RuntimeHealth.recoverable(e)){
+                    show("Temporary download failure. Retry is available; partial verified files are preserved.");
+                    Diagnostics.log("health-fallback","Transient network failure detected for game "+appId+"; manual retry offered");
+                    runOnUiThread(()->{
+                        new AlertDialog.Builder(this).setTitle("Resume interrupted download?")
+                            .setMessage("A temporary connection error occurred. Steam will verify existing files when restarted. Retry?")
+                            .setNegativeButton("Later",null)
+                            .setPositiveButton("Retry",(dialog,which)->{
+                                RuntimeHealth.Result health=RuntimeHealth.retryCheck(getApplicationContext(),dir);
+                                if(health.ok)download(appId,dir);else show(health.detail);
+                            }).show();
+                    });
+                }else show("Steam download error: "+e.getClass().getSimpleName()+": "+e.getMessage());
+            }finally{currentDownload=null;downloading=false;RuntimeHealth.finishDownload();}
         },"steam-depot").start();
     }
     @Override public void onDownloadStarted(DownloadItem item){

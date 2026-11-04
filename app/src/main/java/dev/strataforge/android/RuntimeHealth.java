@@ -8,6 +8,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
 import java.security.Security;
+import java.security.Provider;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -33,8 +35,15 @@ final class RuntimeHealth {
       if(!folder.isDirectory()&&!folder.mkdirs())throw new IllegalStateException("Cannot create game directory");
       long available=new StatFs(folder.getAbsolutePath()).getAvailableBytes();
       if(available<MIN_FREE)throw new IllegalStateException("Low storage: "+(available/1048576)+" MiB free; reserve at least 512 MiB");
-      if(!"org.bouncycastle.jce.provider.BouncyCastleProvider".equals(Security.getProvider("BC").getClass().getName()))
-        throw new IllegalStateException("Full BouncyCastle provider not active");
+      Provider provider=Security.getProvider("BC");
+      if(!(provider instanceof BouncyCastleProvider)){
+        Diagnostics.log("health-fallback","Attempting to restore full BouncyCastle provider");
+        if(provider!=null)Security.removeProvider("BC");
+        Security.insertProviderAt(new BouncyCastleProvider(),1);
+        provider=Security.getProvider("BC");
+        if(!(provider instanceof BouncyCastleProvider))
+          throw new IllegalStateException("Full BouncyCastle provider registration failed");
+      }
       byte[] expected=hex("a9993e364706816aba3e25717850c26c9cd0d89d");
       if(!Arrays.equals(expected,MessageDigest.getInstance("SHA-1","BC").digest("abc".getBytes("UTF-8"))))
         throw new IllegalStateException("Steam SHA-1 verification failed");
@@ -51,6 +60,28 @@ final class RuntimeHealth {
       Diagnostics.error("health-preflight",new IllegalStateException("Download blocked before failure: "+problem.getMessage()));
       return new Result(false,"Download blocked: "+problem.getClass().getSimpleName()+": "+problem.getMessage());
     }
+  }
+  static boolean recoverable(Throwable failure){
+    Throwable cause=failure;
+    int depth=0;
+    while(cause!=null&&depth++<8){
+      if(cause instanceof java.net.SocketTimeoutException ||
+         cause instanceof java.net.ConnectException ||
+         cause instanceof java.net.UnknownHostException ||
+         cause instanceof java.io.InterruptedIOException)
+         return true;
+      if(cause instanceof LinkageError ||
+         cause instanceof java.security.GeneralSecurityException ||
+         cause instanceof SecurityException)
+         return false;
+      cause=cause.getCause();
+    }
+    return false;
+  }
+  static Result retryCheck(Context context,File folder){
+    try{
+      return preflight(context,folder);
+    }catch(Exception ex){return new Result(false,"Retry preparation failed: "+ex.getMessage());}
   }
   static void startDownload(int appId){
     gameId=appId;downloading=true;stallReported=false;lastProgress=SystemClock.elapsedRealtime();

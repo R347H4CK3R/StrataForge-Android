@@ -3,6 +3,10 @@ package dev.strataforge.android;
 import android.app.Application;
 import android.content.Context;
 import android.os.Build;
+import java.security.Security;
+import java.security.MessageDigest;
+import java.security.Provider;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import android.app.job.JobInfo;
 import android.app.job.JobScheduler;
 import android.content.ComponentName;
@@ -22,6 +26,7 @@ public final class Diagnostics extends Application {
   @Override public void onCreate(){
     super.onCreate();
     context=getApplicationContext();
+    initializeSteamCrypto();
     previous=Thread.getDefaultUncaughtExceptionHandler();
     Thread.setDefaultUncaughtExceptionHandler((thread,error)->{
       try{
@@ -49,6 +54,27 @@ public final class Diagnostics extends Application {
         scheduler.schedule(job);
       }
     }catch(Exception ignored){}
+  }
+  private static void initializeSteamCrypto(){
+    try{
+      // Android ships a restricted provider also named BC. JavaSteam expects the full
+      // provider when it calls MessageDigest.getInstance("SHA-1", "BC").
+      Provider active=Security.getProvider("BC");
+      if(!(active instanceof BouncyCastleProvider)){
+        if(active!=null)Security.removeProvider("BC");
+        int position=Security.insertProviderAt(new BouncyCastleProvider(),1);
+        if(position<0)throw new IllegalStateException("BC provider registration rejected");
+      }
+      MessageDigest sha=MessageDigest.getInstance("SHA-1","BC");
+      byte[] digest=sha.digest("abc".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+      StringBuilder hex=new StringBuilder();
+      for(byte b:digest)hex.append(String.format(java.util.Locale.ROOT,"%02x",b&255));
+      if(!"a9993e364706816aba3e25717850c26c9cd0d89d".equals(hex.toString()))
+        throw new SecurityException("BC SHA-1 self-test mismatch");
+      log("crypto","Full BouncyCastle provider active; SHA-1 self-test passed");
+    }catch(Throwable e){
+      log("crypto","Steam cryptography provider error: "+e.getClass().getSimpleName()+": "+e.getMessage());
+    }
   }
   private static String now(){
     SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",Locale.US);

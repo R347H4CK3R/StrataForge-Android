@@ -35,6 +35,13 @@ import in.dragonbra.javasteam.steam.steamclient.callbackmgr.CallbackManager;
 import in.dragonbra.javasteam.steam.steamclient.callbacks.ConnectedCallback;
 import in.dragonbra.javasteam.steam.steamclient.callbacks.DisconnectedCallback;
 import java.io.File;
+import java.io.FileInputStream;
+import java.security.MessageDigest;
+import java.util.ArrayDeque;
+import android.os.SystemClock;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -64,6 +71,17 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     private TextView libraryStatus;
     private Button syncButton;
     private ProgressBar downloadProgress;
+    private ProgressBar scanProgress,hashProgress;
+    private TextView scanLabel,hashLabel,transferLabel;
+    private Button cancelDownloadButton;
+    private final ScheduledExecutorService repairWatchdog=Executors.newSingleThreadScheduledExecutor(r->{
+        Thread t=new Thread(r,"strataforge-repair-watchdog");t.setDaemon(true);return t;
+    });
+    private volatile long lastDownloadEvent;
+    private volatile boolean cancelRequested=false;
+    private volatile boolean stalledRecovery=false;
+    private volatile int autoRetries=0;
+    private static final long STALL_TIMEOUT=5*60*1000L;
     private TextView downloadLabel;
     private volatile String tokenAccount=null;
     private volatile String pendingRefreshToken=null;
@@ -120,6 +138,19 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         downloadsHeading.setText("DOWNLOADS");
         downloadsHeading.setTextColor(Color.WHITE);downloadsHeading.setTextSize(21);
         downloadsHeading.setPadding(0,16,0,4);root.addView(downloadsHeading);
+        TextView stages=new TextView(this);stages.setText("REPAIR STAGES");stages.setTextSize(17);
+        stages.setTextColor(Color.WHITE);root.addView(stages);
+        scanLabel=new TextView(this);scanLabel.setText("1. Scan existing files — idle");
+        scanLabel.setTextColor(Color.LTGRAY);root.addView(scanLabel);
+        scanProgress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
+        scanProgress.setMax(1000);scanProgress.setProgress(0);root.addView(scanProgress,new LinearLayout.LayoutParams(-1,12));
+        hashLabel=new TextView(this);
+        hashLabel.setText("2. Hash local files — idle (not Steam manifest verification)");
+        hashLabel.setTextColor(Color.LTGRAY);root.addView(hashLabel);
+        hashProgress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
+        hashProgress.setMax(1000);hashProgress.setProgress(0);root.addView(hashProgress,new LinearLayout.LayoutParams(-1,12));
+        transferLabel=new TextView(this);transferLabel.setText("3. Steam depot transfer — idle");
+        transferLabel.setTextColor(Color.LTGRAY);root.addView(transferLabel);
         downloadProgress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
         downloadProgress.setMax(1000);downloadProgress.setProgress(0);
         downloadProgress.setVisibility(android.view.View.GONE);
@@ -128,6 +159,27 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         downloadLabel.setText("No active downloads");downloadLabel.setTextSize(14);
         downloadLabel.setTextColor(Color.LTGRAY);downloadLabel.setPadding(0,8,0,12);
         root.addView(downloadLabel);
+        cancelDownloadButton=makeButton("Cancel active repair (keep files)",()->cancelRepair());
+        cancelDownloadButton.setEnabled(false);root.addView(cancelDownloadButton);
+        repairWatchdog.scheduleWithFixedDelay(()->{
+            if(!downloading||cancelRequested||stalledRecovery)return;
+            long elapsed=SystemClock.elapsedRealtime()-lastDownloadEvent;
+            if(elapsed<STALL_TIMEOUT)return;
+            stalledRecovery=true;
+            Diagnostics.error("repair-stall",new IllegalStateException(
+              "No Steam downloader event for "+elapsed/1000+" seconds, AppID "+selectedAppId));
+            runOnUiThread(()->{
+                transferLabel.setText("3. Transfer stalled — restarting once if safe");
+                downloadLabel.setText("No Steam response for 5 minutes. Recovering current session...");
+            });
+            if(autoRetries<1){
+                autoRetries++;
+                DepotDownloader active=currentDownload;
+                if(active!=null)try{active.close();}catch(Throwable ex){Diagnostics.error("repair-close",ex);}
+            }else{
+                runOnUiThread(()->transferLabel.setText("3. Still stalled. Cancel, reconnect and retry manually."));
+            }
+        },30,30,TimeUnit.SECONDS);
         appIdInput=new EditText(this);appIdInput.setTextColor(Color.WHITE);appIdInput.setHintTextColor(Color.LTGRAY);
         appIdInput.setHint("Steam game AppID (e.g. 440)");appIdInput.setInputType(2);
         root.addView(appIdInput);
@@ -424,9 +476,70 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 },"steam-preflight").start();
             }).show();
     }
+    private void cancelRepair(){
+        if(!downloading)return;
+        cancelRequested=true;
+        Diagnostics.log("repair","User requested safe cancellation for AppID "+selectedAppId);
+        transferLabel.setText("3. Cancel requested — preserving partial files");
+        DepotDownloader active=currentDownload;
+        if(active!=null)new Thread(()->{
+            try{active.close();}catch(Throwable ex){Diagnostics.error("repair-cancel",ex);}
+        },"repair-cancel").start();
+    }
+    private void scanAndHash(int appId){
+        File folder=GameInstallStore.findGame(getApplicationContext(),appId);
+        ArrayList<File> files=new ArrayList<>();
+        if(folder!=null){
+            ArrayDeque<File> pending=new ArrayDeque<>();pending.add(folder);
+            while(!pending.isEmpty()){
+                if(cancelRequested)return;
+                File next=pending.removeFirst();
+                File[] children=next.listFiles();
+                if(children==null)continue;
+                for(File child:children){
+                    if(child.isDirectory())pending.add(child);else if(child.isFile())files.add(child);
+                }
+                final int discovered=files.size();
+                runOnUiThread(()->scanLabel.setText("1. Scanning: "+discovered+" files identified"));
+            }
+        }
+        long bytes=0;for(File f:files)bytes+=f.length();
+        final long totalBytes=bytes;final int count=files.size();
+        runOnUiThread(()->{
+            scanProgress.setProgress(1000);
+            scanLabel.setText("1. Scan complete: "+count+" files / "+GameInstallStore.size(totalBytes));
+            hashLabel.setText("2. Calculating local SHA-1 checksums (Steam manifest not yet compared)");
+        });
+        long hashed=0;int completed=0;
+        byte[] buffer=new byte[64*1024];
+        for(File f:files){
+            if(cancelRequested)return;
+            try(FileInputStream stream=new FileInputStream(f)){
+                MessageDigest sha=MessageDigest.getInstance("SHA-1");
+                int n;while((n=stream.read(buffer))!=-1){
+                    if(cancelRequested)return;
+                    sha.update(buffer,0,n);hashed+=n;
+                }
+                sha.digest();completed++;
+            }catch(Exception failure){Diagnostics.error("repair-hash",failure);}
+            final int pct=totalBytes==0?1000:(int)Math.min(1000,hashed*1000/totalBytes);
+            final int done=completed;
+            runOnUiThread(()->{
+                hashProgress.setProgress(pct);
+                hashLabel.setText("2. Local hash audit "+done+"/"+count+" files ("+(pct/10)+"%)");
+            });
+        }
+        runOnUiThread(()->{
+            hashProgress.setProgress(1000);
+            hashLabel.setText("2. Local SHA-1 audit complete; Steam will handle depot validation");
+            transferLabel.setText("3. Preparing Steam depots; waiting for transfer events");
+        });
+        Diagnostics.log("repair","Local audit completed for "+appId+": "+count+" files "+GameInstallStore.size(totalBytes));
+    }
     private void download(int appId,File dir){
         if(downloading){show("A download is already running");return;}
-        downloading=true;
+        downloading=true;cancelRequested=false;stalledRecovery=false;
+        lastDownloadEvent=SystemClock.elapsedRealtime();
         RuntimeHealth.startDownload(appId);
         selectedAppId=appId;
         lastLoggedPercent=-10;
@@ -437,7 +550,18 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             downloadProgress.setIndeterminate(true);
             downloadLabel.setText("Preparing Steam AppID "+appId+"...");
         });
+        runOnUiThread(()->{
+            scanProgress.setProgress(0);hashProgress.setProgress(0);
+            scanLabel.setText("1. Starting file scan...");
+            hashLabel.setText("2. Waiting for scan...");
+            transferLabel.setText("3. Waiting for local audit...");
+            cancelDownloadButton.setEnabled(true);
+        });
         new Thread(()->{
+            try{
+                scanAndHash(appId);
+                if(cancelRequested)return;
+            }catch(Throwable e){Diagnostics.error("repair-scan",e);}
             try(DepotDownloader downloader=new DepotDownloader(steamClient,licenses,true)){
                 currentDownload=downloader;
                 downloader.addListener(this);
@@ -452,8 +576,10 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 downloader.awaitCompletion();
                 downloader.removeListener(this);
             }catch(Throwable e){
-                Diagnostics.error("game-"+appId,e);
-                if(RuntimeHealth.recoverable(e)){
+                if(cancelRequested){
+                    Diagnostics.log("repair","Cancelled AppID "+appId+"; files kept");
+                }else Diagnostics.error("game-"+appId,e);
+                if(!cancelRequested && !stalledRecovery && RuntimeHealth.recoverable(e)){
                     show("Temporary download failure. Retry is available; partial verified files are preserved.");
                     Diagnostics.log("health-fallback","Transient network failure detected for game "+appId+"; manual retry offered");
                     runOnUiThread(()->{
@@ -466,10 +592,20 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                             }).show();
                     });
                 }else show("Steam download error: "+e.getClass().getSimpleName()+": "+e.getMessage());
-            }finally{currentDownload=null;downloading=false;RuntimeHealth.finishDownload();}
+            }finally{
+                currentDownload=null;downloading=false;RuntimeHealth.finishDownload();
+                runOnUiThread(()->cancelDownloadButton.setEnabled(false));
+                if(stalledRecovery&&!cancelRequested&&autoRetries<=1){
+                    stalledRecovery=false;
+                    RuntimeHealth.Result health=RuntimeHealth.preflight(getApplicationContext(),dir);
+                    if(health.ok)runOnUiThread(()->download(appId,dir));
+                    else show("Auto-repair blocked: "+health.detail);
+                }
+            }
         },"steam-depot").start();
     }
     @Override public void onDownloadStarted(DownloadItem item){
+        lastDownloadEvent=SystemClock.elapsedRealtime();
         RuntimeHealth.progress();
         show("Steam download started: "+item.getAppId());
         Diagnostics.log("game-"+item.getAppId(),"Download started");
@@ -481,10 +617,12 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     }
     @Override public void onDownloadCompleted(DownloadItem item){
         show("Steam download completed for AppID "+item.getAppId());
+        lastDownloadEvent=SystemClock.elapsedRealtime();
         Diagnostics.log("game-"+item.getAppId(),"Download completed");
         runOnUiThread(()->{
             downloadProgress.setIndeterminate(false);
             downloadProgress.setProgress(1000);
+            transferLabel.setText("3. Steam depot download completed");
             GameInstallStore.completed(getApplicationContext(),item.getAppId(),true);
             downloadLabel.setText("Steam AppID "+item.getAppId()+" downloaded. "+GameInstallStore.status(getApplicationContext(),item.getAppId()));
         });
@@ -495,10 +633,12 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         runOnUiThread(()->{downloadProgress.setIndeterminate(false);downloadLabel.setText("Download failed: "+e.getMessage());});
     }
     @Override public void onStatusUpdate(String message){
+        lastDownloadEvent=SystemClock.elapsedRealtime();
         RuntimeHealth.progress();
         show("Steam: "+message);
     }
     @Override public void onChunkCompleted(int depotId,float percent,long compressed,long uncompressed){
+        lastDownloadEvent=SystemClock.elapsedRealtime();
         RuntimeHealth.progress();
         float fraction=Math.max(0,Math.min(1,percent));
         int tenPercent=(int)(fraction*10);
@@ -506,6 +646,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         runOnUiThread(()->{
             downloadProgress.setIndeterminate(false);
             downloadProgress.setProgress(Math.round(fraction*1000));
+            transferLabel.setText(String.format(Locale.US,"3. Depot %d chunks: %.1f%%",depotId,fraction*100));
             downloadLabel.setText(String.format(Locale.US,"Depot %d: %.1f%%  |  %,d MB transferred",
                 depotId,fraction*100,(compressed/1048576)));
         });
@@ -529,6 +670,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
     @Override protected void onDestroy(){
         // Closing the screen must never erase the saved Steam login.
         running.set(false);
+        repairWatchdog.shutdownNow();
         try{if(steamClient!=null)steamClient.disconnect();}catch(Exception ignored){}
         super.onDestroy();
     }

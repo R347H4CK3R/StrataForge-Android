@@ -27,6 +27,7 @@ public final class Diagnostics extends Application {
     super.onCreate();
     context=getApplicationContext();
     initializeSteamCrypto();
+    initializeZstd();
     previous=Thread.getDefaultUncaughtExceptionHandler();
     Thread.setDefaultUncaughtExceptionHandler((thread,error)->{
       try{
@@ -41,6 +42,19 @@ public final class Diagnostics extends Application {
     log("app","Process started - Android "+Build.VERSION.RELEASE+" / "+Build.SUPPORTED_ABIS[0]);
     scheduleUpload(this);
     new Thread(()->GithubDiagnostics.uploadPending(getApplicationContext()),"initial-diagnostics-upload").start();
+  }
+  private static void initializeZstd(){
+    try{
+      // Verify the Android AAR bundles both Java methods and ARM native binary.
+      byte[] source="StrataForge Zstandard compatibility self test".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      byte[] packed=com.github.luben.zstd.Zstd.compress(source);
+      byte[] restored=com.github.luben.zstd.Zstd.decompress(packed,source.length);
+      if(!java.util.Arrays.equals(source,restored))
+        throw new IllegalStateException("Zstd round-trip mismatch");
+      log("crypto","Zstandard JNI compression/decompression self-test passed");
+    }catch(Throwable e){
+      log("crypto","Zstd runtime unavailable: "+e.getClass().getName()+": "+e.getMessage());
+    }
   }
   static void scheduleUpload(Context c){
     try{

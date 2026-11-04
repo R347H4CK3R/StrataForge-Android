@@ -456,6 +456,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         try{appId=Integer.parseInt(appIdInput.getText().toString().trim());if(appId<=0)throw new Exception();}
         catch(Exception ex){show("Enter a valid numeric Steam AppID");return;}
         if(downloading){show("Another download is already running.");return;}
+        autoRetries=0;
         File dir=new File(getExternalFilesDir(null),"steamapps");
         if(!dir.exists()&&!dir.mkdirs()){show("Cannot create game storage directory");return;}
         StatFs stats=new StatFs(dir.getAbsolutePath());
@@ -506,6 +507,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         long bytes=0;for(File f:files)bytes+=f.length();
         final long totalBytes=bytes;final int count=files.size();
         runOnUiThread(()->{
+            scanProgress.setIndeterminate(false);
             scanProgress.setProgress(1000);
             scanLabel.setText("1. Scan complete: "+count+" files / "+GameInstallStore.size(totalBytes));
             hashLabel.setText("2. Calculating local SHA-1 checksums (Steam manifest not yet compared)");
@@ -551,6 +553,8 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             downloadLabel.setText("Preparing Steam AppID "+appId+"...");
         });
         runOnUiThread(()->{
+            scanProgress.setIndeterminate(true);
+            hashProgress.setIndeterminate(false);
             scanProgress.setProgress(0);hashProgress.setProgress(0);
             scanLabel.setText("1. Starting file scan...");
             hashLabel.setText("2. Waiting for scan...");
@@ -560,7 +564,15 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         new Thread(()->{
             try{
                 scanAndHash(appId);
-                if(cancelRequested)return;
+                if(cancelRequested){
+                    downloading=false;
+                    RuntimeHealth.finishDownload();
+                    runOnUiThread(()->{
+                        cancelDownloadButton.setEnabled(false);
+                        transferLabel.setText("3. Cancelled before Steam transfer; files preserved");
+                    });
+                    return;
+                }
             }catch(Throwable e){Diagnostics.error("repair-scan",e);}
             try(DepotDownloader downloader=new DepotDownloader(steamClient,licenses,true)){
                 currentDownload=downloader;

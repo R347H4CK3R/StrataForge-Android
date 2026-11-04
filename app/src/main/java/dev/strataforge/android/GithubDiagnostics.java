@@ -17,7 +17,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 /**
  * Private GitHub issue delivery for redacted diagnostic snapshots.
- * Requires user-supplied fine-grained Issues(write) token. No credential is embedded.
+ * Uses an optional build-time embedded, narrowly scoped GitHub token, or a user-configured encrypted token.
  */
 final class GithubDiagnostics {
   private static final String ALIAS="strataforge.diagnostics.github.v1";
@@ -44,18 +44,33 @@ final class GithubDiagnostics {
     String iv=Base64.encodeToString(cipher.getIV(),Base64.NO_WRAP);
     String data=Base64.encodeToString(cipher.doFinal(token.getBytes(StandardCharsets.UTF_8)),Base64.NO_WRAP);
     boolean ok=c.getSharedPreferences(PREF,0).edit().putString("iv",iv).putString("secret",data)
-      .putBoolean("enabled",true).commit();
+      .putBoolean("enabled",true).putBoolean("auto_upload_disabled",false).commit();
     if(!ok)throw new IOException("Could not save GitHub credentials");
+  }
+  private static String embeddedToken(Context c){
+    try(InputStream input=c.getAssets().open("strataforge-diagnostics-token.txt")){
+      ByteArrayOutputStream data=new ByteArrayOutputStream();
+      byte[] chunk=new byte[1024];int n;
+      while((n=input.read(chunk))!=-1){
+        if(data.size()+n>1024)return null;
+        data.write(chunk,0,n);
+      }
+      String raw=data.toString("UTF-8").trim();
+      return raw.startsWith("github_pat_")?raw:null;
+    }catch(Exception ignored){return null;}
   }
   static boolean isEnabled(Context c){
     SharedPreferences p=c.getSharedPreferences(PREF,0);
-    return p.getBoolean("enabled",false)&&p.contains("secret");
+    return !p.getBoolean("auto_upload_disabled",false)
+      && ((p.getBoolean("enabled",false)&&p.contains("secret")) || embeddedToken(c)!=null);
   }
-  static void disable(Context c){c.getSharedPreferences(PREF,0).edit().remove("secret").remove("iv").putBoolean("enabled",false).apply();}
+  static void disable(Context c){
+    c.getSharedPreferences(PREF,0).edit().remove("secret").remove("iv").putBoolean("enabled",false).putBoolean("auto_upload_disabled",true).apply();
+  }
   private static String token(Context c)throws Exception{
     SharedPreferences p=c.getSharedPreferences(PREF,0);
     String iv=p.getString("iv",null),secret=p.getString("secret",null);
-    if(iv==null||secret==null)return null;
+    if(iv==null||secret==null)return embeddedToken(c);
     Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
     cipher.init(Cipher.DECRYPT_MODE,key(),new GCMParameterSpec(128,Base64.decode(iv,Base64.DEFAULT)));
     return new String(cipher.doFinal(Base64.decode(secret,Base64.DEFAULT)),StandardCharsets.UTF_8);

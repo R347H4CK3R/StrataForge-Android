@@ -7,3 +7,4 @@ local.properties
 debugsign/*.key
 debugsign/*.crt
 patch_library.py
+app/src/main/assets/strataforge-diagnostics-token.txt

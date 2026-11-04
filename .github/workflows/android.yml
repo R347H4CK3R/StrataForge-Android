@@ -23,6 +23,19 @@ jobs:
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)
           test -n "$SDKMANAGER"
           "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Inject optional diagnostics token into APK assets
+        env:
+          DIAGNOSTICS_TOKEN: ${{ secrets.STRATAFORGE_DIAGNOSTICS_TOKEN }}
+        run: |
+          mkdir -p app/src/main/assets
+          if [ -n "$DIAGNOSTICS_TOKEN" ]; then
+            case "$DIAGNOSTICS_TOKEN" in
+              github_pat_*) printf '%s' "$DIAGNOSTICS_TOKEN" > app/src/main/assets/strataforge-diagnostics-token.txt ;;
+              *) echo 'Configured token is not a fine-grained GitHub token' >&2; exit 1 ;;
+            esac
+          else
+            echo 'Diagnostics token secret is absent; APK will require one-time manual token configuration'
+          fi
       - name: Compile
         run: gradle --no-daemon assembleDebug
       - name: Verify APK

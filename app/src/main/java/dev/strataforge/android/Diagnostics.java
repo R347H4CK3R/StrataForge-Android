@@ -3,6 +3,9 @@ package dev.strataforge.android;
 import android.app.Application;
 import android.content.Context;
 import android.os.Build;
+import android.app.job.JobInfo;
+import android.app.job.JobScheduler;
+import android.content.ComponentName;
 import android.util.Log;
 import java.io.*;
 import java.text.SimpleDateFormat;
@@ -31,6 +34,21 @@ public final class Diagnostics extends Application {
       else android.os.Process.killProcess(android.os.Process.myPid());
     });
     log("app","Process started - Android "+Build.VERSION.RELEASE+" / "+Build.SUPPORTED_ABIS[0]);
+    scheduleUpload(this);
+    new Thread(()->GithubDiagnostics.uploadPending(getApplicationContext()),"initial-diagnostics-upload").start();
+  }
+  static void scheduleUpload(Context c){
+    try{
+      JobScheduler scheduler=(JobScheduler)c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+      if(scheduler!=null){
+        JobInfo job=new JobInfo.Builder(11042,new ComponentName(c,DiagnosticUploadJob.class))
+            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setPersisted(true)
+            .setPeriodic(15*60*1000L)
+            .build();
+        scheduler.schedule(job);
+      }
+    }catch(Exception ignored){}
   }
   private static String now(){
     SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",Locale.US);

@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 android {
  namespace 'dev.strataforge.android'
  compileSdk 35
- defaultConfig { applicationId 'dev.strataforge.android'; minSdk 26; targetSdk 35; versionCode 7; versionName '0.4.1' }
+ defaultConfig { applicationId 'dev.strataforge.android'; minSdk 26; targetSdk 35; versionCode 8; versionName '0.4.2' }
  signingConfigs {
   debug {
    storeFile file("$rootDir/debugsign/debug.p12")
@@ -12,6 +12,7 @@ android {
    storeType 'pkcs12'
   }
  }
+ packaging { resources { excludes += ["META-INF/versions/9/OSGI-INF/MANIFEST.MF"] } }
  compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 dependencies {

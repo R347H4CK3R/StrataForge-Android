@@ -20,11 +20,62 @@ public class DiagnosticsActivity extends Activity {
     root=new LinearLayout(this);root.setOrientation(1);root.setPadding(18,18,18,18);
     root.setBackgroundColor(Color.rgb(13,18,27));sc.addView(root);setContentView(sc);
     TextView title=new TextView(this);title.setText("DIAGNOSTICS");title.setTextColor(Color.WHITE);title.setTextSize(25);root.addView(title);
+    TextView githubStatus=new TextView(this);
+    githubStatus.setTextColor(Color.LTGRAY);
+    githubStatus.setText("Automatic GitHub reports: "+(GithubDiagnostics.isEnabled(this)?"ENABLED":"SETUP REQUIRED"));
+    root.addView(githubStatus);
+    Button authorize=new Button(this);
+    authorize.setText("Configure automatic GitHub uploads");
+    authorize.setOnClickListener(v->configureGithub(githubStatus));
+    root.addView(authorize);
+    Button send=new Button(this);
+    send.setText("Send pending reports now");
+    send.setOnClickListener(v->{
+      if(!GithubDiagnostics.isEnabled(this)){
+        Toast.makeText(this,"Configure a GitHub token first",Toast.LENGTH_LONG).show();return;
+      }
+      new Thread(()->{
+        GithubDiagnostics.uploadPending(getApplicationContext());
+        runOnUiThread(()->Toast.makeText(this,"Upload attempted. Check your private repository Issues.",Toast.LENGTH_LONG).show());
+      },"diagnostics-send").start();
+    });
+    root.addView(send);
+    Button disable=new Button(this);disable.setText("Disable automatic GitHub uploads");
+    disable.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
+      .setTitle("Disable automatic diagnostics?")
+      .setMessage("This removes the GitHub token stored on this tablet. Existing GitHub issues are not deleted.")
+      .setNegativeButton("Cancel",null)
+      .setPositiveButton("Disable",(dlg,which)->{
+        GithubDiagnostics.disable(this);
+        githubStatus.setText("Automatic GitHub reports: DISABLED");
+      }).show());
+    root.addView(disable);
     Button refresh=new Button(this);refresh.setText("Refresh logs");refresh.setOnClickListener(v->refresh());root.addView(refresh);
     Button export=new Button(this);export.setText("Export diagnostic ZIP");export.setOnClickListener(v->export());root.addView(export);
     TextView warning=new TextView(this);warning.setText("Logs may contain game paths, device details or account names. Review before sharing. No automatic uploads.");warning.setTextColor(Color.LTGRAY);root.addView(warning);
     contents=new TextView(this);contents.setTextColor(Color.WHITE);contents.setTextSize(13);contents.setPadding(0,16,0,0);root.addView(contents);
     refresh();
+  }
+  private void configureGithub(TextView state){
+    EditText token=new EditText(this);
+    token.setSingleLine(true);
+    token.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+    token.setHint("github_pat_...");
+    new android.app.AlertDialog.Builder(this)
+      .setTitle("Enable automatic diagnostic reports")
+      .setMessage("Create a GitHub fine-grained token restricted to R347H4CK3R/StrataForge-Android, with Issues: Read and write. The token is encrypted in Android Keystore. Crash and error reports will be uploaded automatically to this PRIVATE repository when connected. Steam credentials must never be pasted here.")
+      .setView(token)
+      .setNegativeButton("Cancel",null)
+      .setPositiveButton("Enable",(dialog,which)->{
+        try{
+          GithubDiagnostics.configure(this,token.getText().toString());
+          state.setText("Automatic GitHub reports: ENABLED");
+          Diagnostics.scheduleUpload(this);
+          new Thread(()->GithubDiagnostics.uploadPending(getApplicationContext()),"github-first-upload").start();
+        }catch(Exception e){
+          Toast.makeText(this,"Token setup failed: "+e.getMessage(),Toast.LENGTH_LONG).show();
+        }
+      }).show();
   }
   private void refresh(){
     File dir=Diagnostics.directory(this);File[] files=dir.listFiles();

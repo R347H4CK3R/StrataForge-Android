@@ -16,6 +16,8 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public final class Diagnostics extends Application {
   private static final Object LOCK=new Object();
@@ -40,6 +42,10 @@ public final class Diagnostics extends Application {
       else android.os.Process.killProcess(android.os.Process.myPid());
     });
     log("app","Process started - Android "+Build.VERSION.RELEASE+" / "+Build.SUPPORTED_ABIS[0]);
+    Executors.newSingleThreadScheduledExecutor(r->{
+      Thread t=new Thread(r,"strataforge-health-watchdog");t.setDaemon(true);return t;
+    }).scheduleWithFixedDelay(()->RuntimeHealth.check(getApplicationContext()),30,30,TimeUnit.SECONDS);
+    log("health","Live diagnostic watchdog enabled (30s checks)");
     scheduleUpload(this);
     new Thread(()->GithubDiagnostics.uploadPending(getApplicationContext()),"initial-diagnostics-upload").start();
   }
@@ -103,7 +109,11 @@ public final class Diagnostics extends Application {
     return s.length()>8000?s.substring(0,8000)+" [truncated]":s;
   }
   static void log(String category,String message){write("INFO",category,message);}
-  static void error(String category,Throwable e){write("ERROR",category,e.getClass().getSimpleName()+": "+e.getMessage());}
+  static void error(String category,Throwable e){
+    write("ERROR",category,e.getClass().getSimpleName()+": "+e.getMessage());
+    Context c=context;
+    if(c!=null)new Thread(()->GithubDiagnostics.uploadPending(c),"health-auto-report").start();
+  }
   static void write(String level,String category,String message){
     Context c=context;if(c==null)return;
     synchronized(LOCK){

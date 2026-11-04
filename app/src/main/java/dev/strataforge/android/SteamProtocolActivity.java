@@ -399,10 +399,22 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         new AlertDialog.Builder(this).setTitle("Download Steam game "+appId)
             .setMessage("Available storage: "+(free/1048576)+" MiB. Game size is not yet known. Steam may reject games your account does not own. Download Windows PC game files here? This will use mobile data or Wi-Fi.")
             .setNegativeButton("Cancel",null)
-            .setPositiveButton("Download",(dialog,which)->download(appId,dir)).show();
+            .setPositiveButton("Download",(dialog,which)->{
+                downloadButton.setEnabled(false);
+                show("Checking download prerequisites...");
+                new Thread(()->{
+                    RuntimeHealth.Result health=RuntimeHealth.preflight(getApplicationContext(),dir);
+                    runOnUiThread(()->{
+                        downloadButton.setEnabled(true);
+                        if(health.ok)download(appId,dir);
+                        else show(health.detail);
+                    });
+                },"steam-preflight").start();
+            }).show();
     }
     private void download(int appId,File dir){
         downloading=true;
+        RuntimeHealth.startDownload(appId);
         selectedAppId=appId;
         lastLoggedPercent=-10;
         Diagnostics.log("game-"+appId,"Download requested");
@@ -426,10 +438,11 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 downloader.awaitCompletion();
                 downloader.removeListener(this);
             }catch(Throwable e){show("Steam download error: "+e.getClass().getSimpleName()+": "+e.getMessage());Diagnostics.error("game-"+appId,e);}
-            finally{currentDownload=null;downloading=false;}
+            finally{currentDownload=null;downloading=false;RuntimeHealth.finishDownload();}
         },"steam-depot").start();
     }
     @Override public void onDownloadStarted(DownloadItem item){
+        RuntimeHealth.progress();
         show("Steam download started: "+item.getAppId());
         Diagnostics.log("game-"+item.getAppId(),"Download started");
         runOnUiThread(()->{
@@ -452,8 +465,12 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         Diagnostics.error("game-"+item.getAppId(),e);
         runOnUiThread(()->{downloadProgress.setIndeterminate(false);downloadLabel.setText("Download failed: "+e.getMessage());});
     }
-    @Override public void onStatusUpdate(String message){show("Steam: "+message);}
+    @Override public void onStatusUpdate(String message){
+        RuntimeHealth.progress();
+        show("Steam: "+message);
+    }
     @Override public void onChunkCompleted(int depotId,float percent,long compressed,long uncompressed){
+        RuntimeHealth.progress();
         float fraction=Math.max(0,Math.min(1,percent));
         int tenPercent=(int)(fraction*10);
         if(tenPercent>lastLoggedPercent){lastLoggedPercent=tenPercent;Diagnostics.log("game-"+selectedAppId,"Depot "+depotId+" "+Math.round(fraction*100)+" percent");}

@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 android {
  namespace 'dev.strataforge.android'
  compileSdk 35
- defaultConfig { applicationId 'dev.strataforge.android'; minSdk 26; targetSdk 35; versionCode 11; versionName '0.4.5' }
+ defaultConfig { applicationId 'dev.strataforge.android'; minSdk 26; targetSdk 35; versionCode 12; versionName '0.4.6' }
  signingConfigs {
   debug {
    storeFile file("$rootDir/debugsign/debug.p12")
@@ -22,4 +22,5 @@ dependencies {
  implementation 'com.google.zxing:core:3.5.3'
  implementation 'org.bouncycastle:bcprov-jdk18on:1.83'
  implementation 'com.github.luben:zstd-jni:1.5.7-6@aar'
+ implementation 'org.tukaani:xz:1.11'
 }

@@ -162,7 +162,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         cancelDownloadButton=makeButton("Cancel active repair (keep files)",()->cancelRepair());
         cancelDownloadButton.setEnabled(false);root.addView(cancelDownloadButton);
         repairWatchdog.scheduleWithFixedDelay(()->{
-            if(!downloading||cancelRequested||stalledRecovery)return;
+            if(!downloading||cancelRequested||stalledRecovery||currentDownload==null)return;
             long elapsed=SystemClock.elapsedRealtime()-lastDownloadEvent;
             if(elapsed<STALL_TIMEOUT)return;
             stalledRecovery=true;
@@ -595,8 +595,8 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
             }finally{
                 currentDownload=null;downloading=false;RuntimeHealth.finishDownload();
                 runOnUiThread(()->cancelDownloadButton.setEnabled(false));
-                if(stalledRecovery&&!cancelRequested&&autoRetries<=1){
-                    stalledRecovery=false;
+                if(stalledRecovery&&!cancelRequested&&autoRetries==1){
+                    stalledRecovery=false;autoRetries=2;
                     RuntimeHealth.Result health=RuntimeHealth.preflight(getApplicationContext(),dir);
                     if(health.ok)runOnUiThread(()->download(appId,dir));
                     else show("Auto-repair blocked: "+health.detail);

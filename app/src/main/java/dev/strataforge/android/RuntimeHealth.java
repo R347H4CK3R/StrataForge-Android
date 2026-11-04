@@ -39,7 +39,7 @@ final class RuntimeHealth {
       if(!(provider instanceof BouncyCastleProvider)){
         Diagnostics.log("health-fallback","Attempting to restore full BouncyCastle provider");
         if(provider!=null)Security.removeProvider("BC");
-        Security.insertProviderAt(new BouncyCastleProvider(),1);
+        Security.addProvider(new BouncyCastleProvider());
         provider=Security.getProvider("BC");
         if(!(provider instanceof BouncyCastleProvider))
           throw new IllegalStateException("Full BouncyCastle provider registration failed");

@@ -373,7 +373,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                 lp.setMargins(0,4,0,4);
                 gameList.addView(tile,lp);
                 TextView title=new TextView(this);
-                title.setText(game.getValue()+"\nNot installed  |  Steam AppID "+id);
+                title.setText(game.getValue()+"\n"+GameInstallStore.status(getApplicationContext(),id)+" | Steam AppID "+id);
                 title.setTextColor(Color.WHITE);
                 title.setTextSize(15);
                 tile.addView(title,new LinearLayout.LayoutParams(0,-2,1));
@@ -383,6 +383,18 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
                     confirmDownload();
                 });
                 tile.addView(install);
+                Button verify=new Button(this);
+                verify.setText("Verify / Repair");
+                verify.setOnClickListener(v->{
+                    String status=GameInstallStore.verify(getApplicationContext(),id);
+                    new AlertDialog.Builder(this).setTitle("Steam AppID "+id)
+                      .setMessage(status+"\n\nRepair uses the Steam downloader and preserves existing downloaded files.")
+                      .setNegativeButton("Cancel",null)
+                      .setPositiveButton("Repair",(dialog,which)->{
+                        selectedAppId=id;appIdInput.setText(String.valueOf(id));confirmDownload();
+                      }).show();
+                });
+                tile.addView(verify);
             }
         });
     }
@@ -418,6 +430,7 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         RuntimeHealth.startDownload(appId);
         selectedAppId=appId;
         lastLoggedPercent=-10;
+        GameInstallStore.completed(getApplicationContext(),appId,false);
         Diagnostics.log("game-"+appId,"Download requested");
         runOnUiThread(()->{
             downloadProgress.setVisibility(android.view.View.VISIBLE);
@@ -472,7 +485,8 @@ public class SteamProtocolActivity extends Activity implements IDownloadListener
         runOnUiThread(()->{
             downloadProgress.setIndeterminate(false);
             downloadProgress.setProgress(1000);
-            downloadLabel.setText("Steam AppID "+item.getAppId()+" downloaded. Game execution is not yet available.");
+            GameInstallStore.completed(getApplicationContext(),item.getAppId(),true);
+            downloadLabel.setText("Steam AppID "+item.getAppId()+" downloaded. "+GameInstallStore.status(getApplicationContext(),item.getAppId()));
         });
     }
     @Override public void onDownloadFailed(DownloadItem item,Throwable e){

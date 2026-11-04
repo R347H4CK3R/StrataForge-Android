@@ -46,6 +46,7 @@ public class MainActivity extends Activity {
     TextView desc=text("Connect to Steam, browse owned games and manage downloads.",14,Color.LTGRAY,false);
     desc.setPadding(0,8,0,8);featured.addView(desc);
     featured.addView(button("Open Steam library",()->open(SteamProtocolActivity.class)));
+    featured.addView(button("Windows game execution options",()->open(GameExecutionActivity.class)));
     layout.addView(featured);
     TextView section=text("LIBRARY",21,Color.WHITE,true);section.setPadding(0,23,0,8);layout.addView(section);
     LinearLayout tools=new LinearLayout(this);tools.setOrientation(0);

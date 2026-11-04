@@ -82,7 +82,7 @@ public final class Diagnostics extends Application {
       Provider active=Security.getProvider("BC");
       if(!(active instanceof BouncyCastleProvider)){
         if(active!=null)Security.removeProvider("BC");
-        int position=Security.insertProviderAt(new BouncyCastleProvider(),1);
+        int position=Security.addProvider(new BouncyCastleProvider());
         if(position<0)throw new IllegalStateException("BC provider registration rejected");
       }
       MessageDigest sha=MessageDigest.getInstance("SHA-1","BC");
